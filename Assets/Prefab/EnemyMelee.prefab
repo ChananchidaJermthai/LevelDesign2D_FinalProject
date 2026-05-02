@@ -172,7 +172,7 @@ MonoBehaviour:
   flashDuration: 0.08
   deathEffect: {fileID: 0}
   destroyOnDeath: 1
-  destroyDelay: 0
+  destroyDelay: 1
 --- !u!143 &8876121436398327937
 CharacterController:
   m_ObjectHideFlags: 0
