@@ -8,6 +8,7 @@ using UnityEngine;
 /// - เห็น Player แล้วไล่
 /// - ถ้า Player ออกนอกระยะ หรือ Enemy ถูกล่อไกลเกิน Leash Range จะกลับจุดเดินเดิม
 /// - ก่อนโจมตีจะหยุดและแสดงวงแดงขยาย แล้วค่อยทำดาเมจ
+/// - เพิ่ม Movement Zone เพื่อกัน Enemy เดิน/ไล่ออกนอกพื้นที่จนตกแมพ
 /// </summary>
 [RequireComponent(typeof(CharacterController))]
 public class EnemyMeleePatrol : MonoBehaviour
@@ -41,6 +42,22 @@ public class EnemyMeleePatrol : MonoBehaviour
     public float losePlayerRange = 12f;
     [Tooltip("ถ้า Enemy ถูกล่อออกจากจุดเกิดเกินค่านี้ จะเลิกตาม Player และเดินกลับ")]
     public float leashRange = 14f;
+
+    [Header("=== Movement Zone / Anti Fall ===")]
+    [Tooltip("ลาก BoxCollider/Collider ของพื้นที่ที่ Enemy อนุญาตให้เดินได้มาใส่ ถ้าไม่ใส่จะใช้ Logic เดิมทั้งหมด")]
+    public Collider movementZone;
+    [Tooltip("ถ้าเปิดไว้ ถึง Enemy จะเห็น Player แต่ถ้า Player ยังไม่เข้า Zone จะไม่ไล่/ไม่โจมตี")]
+    public bool requirePlayerInsideZoneToChase = true;
+    [Tooltip("ถ้า Player ออกจาก Zone ระหว่างสู้ Enemy จะหยุดไล่และกลับไปเดินปกติ")]
+    public bool stopChaseWhenPlayerLeavesZone = true;
+    [Tooltip("บังคับไม่ให้ Enemy เดินออกนอก Zone")]
+    public bool keepEnemyInsideZone = true;
+    [Tooltip("สุ่มจุดเดินเล่นให้อยู่ใน Zone ด้วย")]
+    public bool clampWanderTargetInsideZone = true;
+    [Tooltip("เว้นระยะจากขอบ Zone เพื่อกัน CharacterController คร่อมขอบแล้วตกแมพ")]
+    public float zoneEdgePadding = 0.4f;
+    [Tooltip("เช็ค Zone เฉพาะแกน X/Z เพื่อใช้เป็นพื้นที่บนพื้น ไม่สนความสูง Y")]
+    public bool ignoreZoneY = true;
 
     [Header("=== Attack ===")]
     public float attackRange = 2.2f;
@@ -78,6 +95,12 @@ public class EnemyMeleePatrol : MonoBehaviour
         enemyHealth = GetComponent<EnemyHealth>();
         spawnPosition = transform.position;
 
+        if (movementZone != null && keepEnemyInsideZone)
+        {
+            spawnPosition = ClampPointToMovementZone(spawnPosition);
+            transform.position = spawnPosition;
+        }
+
         if (warningCircle == null)
         {
             GameObject circleObj = new GameObject("Attack_Warning_Circle");
@@ -97,19 +120,25 @@ public class EnemyMeleePatrol : MonoBehaviour
         if (isAttacking)
             return;
 
+        bool playerBlockedByZone = ShouldIgnorePlayerBecauseOutsideZone();
         float distanceToSpawn = Vector3.Distance(transform.position, spawnPosition);
 
         if (distanceToSpawn > leashRange)
         {
             state = State.ReturnToSpawn;
         }
-        else if (CanSeePlayer())
+        else if (!playerBlockedByZone && CanSeePlayer())
         {
             float playerDistance = Vector3.Distance(transform.position, player.position);
             state = playerDistance <= attackRange ? State.Attack : State.Chase;
         }
         else
         {
+            if (stopChaseWhenPlayerLeavesZone && playerBlockedByZone && state == State.Chase)
+            {
+                PickNewWanderTarget();
+            }
+
             state = State.Wander;
         }
 
@@ -147,6 +176,16 @@ public class EnemyMeleePatrol : MonoBehaviour
         return distance <= detectRange || distance <= losePlayerRange && state == State.Chase;
     }
 
+    private bool ShouldIgnorePlayerBecauseOutsideZone()
+    {
+        if (movementZone == null) return false;
+        if (player == null) return false;
+        if (!requirePlayerInsideZoneToChase && !stopChaseWhenPlayerLeavesZone) return false;
+
+        bool playerInsideZone = IsPointInsideMovementZone(player.position);
+        return !playerInsideZone;
+    }
+
     private void Wander()
     {
         float distance = Vector3.Distance(transform.position, wanderTarget);
@@ -169,6 +208,12 @@ public class EnemyMeleePatrol : MonoBehaviour
     private void ChasePlayer()
     {
         if (player == null) return;
+        if (ShouldIgnorePlayerBecauseOutsideZone())
+        {
+            state = State.Wander;
+            return;
+        }
+
         MoveTowards(player.position, chaseSpeed);
     }
 
@@ -187,6 +232,7 @@ public class EnemyMeleePatrol : MonoBehaviour
 
     private void TryAttack()
     {
+        if (ShouldIgnorePlayerBecauseOutsideZone()) return;
         if (Time.time < lastAttackTime + attackCooldown) return;
         StartCoroutine(AttackRoutine());
     }
@@ -201,6 +247,13 @@ public class EnemyMeleePatrol : MonoBehaviour
         float timer = 0f;
         while (timer < attackWarningTime)
         {
+            if (ShouldIgnorePlayerBecauseOutsideZone())
+            {
+                warningCircle.Hide();
+                isAttacking = false;
+                yield break;
+            }
+
             if (player != null)
                 FaceDirection(player.position - transform.position);
 
@@ -234,6 +287,9 @@ public class EnemyMeleePatrol : MonoBehaviour
             PlayerHealth hp = hit.GetComponentInParent<PlayerHealth>();
             if (hp == null || damagedPlayers.Contains(hp)) continue;
 
+            if (movementZone != null && requirePlayerInsideZoneToChase && !IsPointInsideMovementZone(hp.transform.position))
+                continue;
+
             hp.TakeDamage(attackDamage);
             damagedPlayers.Add(hp);
         }
@@ -243,11 +299,18 @@ public class EnemyMeleePatrol : MonoBehaviour
     {
         Vector2 random = Random.insideUnitCircle * wanderRadius;
         wanderTarget = spawnPosition + new Vector3(random.x, 0f, random.y);
+
+        if (movementZone != null && clampWanderTargetInsideZone)
+            wanderTarget = ClampPointToMovementZone(wanderTarget);
+
         wanderTarget = GetGroundPoint(wanderTarget);
     }
 
     private void MoveTowards(Vector3 target, float speed)
     {
+        if (movementZone != null && keepEnemyInsideZone)
+            target = ClampPointToMovementZone(target);
+
         Vector3 direction = target - transform.position;
         direction.y = 0f;
 
@@ -264,8 +327,28 @@ public class EnemyMeleePatrol : MonoBehaviour
     private void Move(Vector3 direction, float speed)
     {
         Vector3 horizontalMove = direction * speed;
+
+        if (movementZone != null && keepEnemyInsideZone)
+        {
+            Vector3 proposedPosition = transform.position + horizontalMove * Time.deltaTime;
+            Vector3 clampedPosition = ClampPointToMovementZone(proposedPosition);
+            Vector3 allowedMove = (clampedPosition - transform.position) / Mathf.Max(Time.deltaTime, 0.0001f);
+            allowedMove.y = 0f;
+            horizontalMove = allowedMove;
+        }
+
         Vector3 motion = horizontalMove + Vector3.up * verticalVelocity;
         controller.Move(motion * Time.deltaTime);
+
+        if (movementZone != null && keepEnemyInsideZone && !IsPointInsideMovementZone(transform.position))
+        {
+            Vector3 clamped = ClampPointToMovementZone(transform.position);
+            clamped.y = transform.position.y;
+
+            controller.enabled = false;
+            transform.position = clamped;
+            controller.enabled = true;
+        }
     }
 
     private void FaceDirection(Vector3 direction)
@@ -294,6 +377,83 @@ public class EnemyMeleePatrol : MonoBehaviour
         return point;
     }
 
+    private bool IsPointInsideMovementZone(Vector3 worldPoint)
+    {
+        if (movementZone == null) return true;
+
+        BoxCollider box = movementZone as BoxCollider;
+        if (box != null)
+        {
+            Vector3 localPoint = box.transform.InverseTransformPoint(worldPoint);
+            Vector3 half = box.size * 0.5f;
+            Vector3 min = box.center - half;
+            Vector3 max = box.center + half;
+
+            float padding = Mathf.Max(0f, zoneEdgePadding);
+
+            bool insideX = localPoint.x >= min.x + padding && localPoint.x <= max.x - padding;
+            bool insideZ = localPoint.z >= min.z + padding && localPoint.z <= max.z - padding;
+            bool insideY = ignoreZoneY || (localPoint.y >= min.y && localPoint.y <= max.y);
+
+            return insideX && insideZ && insideY;
+        }
+
+        Bounds bounds = movementZone.bounds;
+        float p = Mathf.Max(0f, zoneEdgePadding);
+
+        bool boundsInsideX = worldPoint.x >= bounds.min.x + p && worldPoint.x <= bounds.max.x - p;
+        bool boundsInsideZ = worldPoint.z >= bounds.min.z + p && worldPoint.z <= bounds.max.z - p;
+        bool boundsInsideY = ignoreZoneY || (worldPoint.y >= bounds.min.y && worldPoint.y <= bounds.max.y);
+
+        return boundsInsideX && boundsInsideZ && boundsInsideY;
+    }
+
+    private Vector3 ClampPointToMovementZone(Vector3 worldPoint)
+    {
+        if (movementZone == null) return worldPoint;
+
+        BoxCollider box = movementZone as BoxCollider;
+        if (box != null)
+        {
+            Vector3 localPoint = box.transform.InverseTransformPoint(worldPoint);
+            Vector3 half = box.size * 0.5f;
+            Vector3 min = box.center - half;
+            Vector3 max = box.center + half;
+
+            float padding = Mathf.Max(0f, zoneEdgePadding);
+            float minX = min.x + padding;
+            float maxX = max.x - padding;
+            float minZ = min.z + padding;
+            float maxZ = max.z - padding;
+
+            if (minX > maxX)
+            {
+                float middleX = (min.x + max.x) * 0.5f;
+                minX = middleX;
+                maxX = middleX;
+            }
+
+            if (minZ > maxZ)
+            {
+                float middleZ = (min.z + max.z) * 0.5f;
+                minZ = middleZ;
+                maxZ = middleZ;
+            }
+
+            localPoint.x = Mathf.Clamp(localPoint.x, minX, maxX);
+            localPoint.z = Mathf.Clamp(localPoint.z, minZ, maxZ);
+
+            return box.transform.TransformPoint(localPoint);
+        }
+
+        Bounds bounds = movementZone.bounds;
+        float p = Mathf.Max(0f, zoneEdgePadding);
+
+        worldPoint.x = Mathf.Clamp(worldPoint.x, bounds.min.x + p, bounds.max.x - p);
+        worldPoint.z = Mathf.Clamp(worldPoint.z, bounds.min.z + p, bounds.max.z - p);
+        return worldPoint;
+    }
+
     private void OnDrawGizmosSelected()
     {
         if (!drawGizmos) return;
@@ -311,5 +471,23 @@ public class EnemyMeleePatrol : MonoBehaviour
 
         Gizmos.color = Color.cyan;
         Gizmos.DrawWireSphere(transform.position, attackRadius);
+
+        if (movementZone != null)
+        {
+            Gizmos.color = new Color(0f, 1f, 0f, 0.35f);
+
+            BoxCollider box = movementZone as BoxCollider;
+            if (box != null)
+            {
+                Matrix4x4 oldMatrix = Gizmos.matrix;
+                Gizmos.matrix = box.transform.localToWorldMatrix;
+                Gizmos.DrawWireCube(box.center, box.size);
+                Gizmos.matrix = oldMatrix;
+            }
+            else
+            {
+                Gizmos.DrawWireCube(movementZone.bounds.center, movementZone.bounds.size);
+            }
+        }
     }
 }

@@ -58,13 +58,18 @@ public class PlayerHealth : MonoBehaviour
 
         Debug.Log($"[PlayerHealth] Took {amount} damage. HP = {currentHealth}/{maxHealth}");
 
+        if (currentHealth <= 0f)
+        {
+            Die();
+            return; // ตายแล้วไม่ต้อง Start Invincibility Coroutine
+        }
+
         if (useHitFlash)
             StartCoroutine(HitFlashRoutine());
 
-        StartCoroutine(InvincibilityRoutine());
-
-        if (currentHealth <= 0f)
-            Die();
+        // หยุด Coroutine เก่าก่อนเริ่มใหม่ กันค้าง isInvincible = true
+        StopCoroutine(nameof(InvincibilityRoutine));
+        StartCoroutine(nameof(InvincibilityRoutine));
     }
 
     public void Heal(float amount)
@@ -84,6 +89,8 @@ public class PlayerHealth : MonoBehaviour
     public void Revive(bool fullHealth = true)
     {
         isDead = false;
+        isInvincible = false;       // แก้ Bug: ล้าง flag ค้างจาก Coroutine ก่อนตาย
+        isInvincibleForced = false;
         if (fullHealth) currentHealth = maxHealth;
         UpdateHealthBar();
         gameObject.SetActive(true);
@@ -93,6 +100,15 @@ public class PlayerHealth : MonoBehaviour
     {
         if (isDead) return;
         isDead = true;
+
+        // ล้าง Invincibility state ทั้งหมดก่อน SetActive(false)
+        // เพราะ SetActive(false) จะหยุด Coroutine กลางคัน ทำให้ isInvincible ค้างได้
+        StopAllCoroutines();
+        isInvincible = false;
+        isInvincibleForced = false;
+
+        // คืนสีปกติ (ถ้า HitFlash ค้างอยู่)
+        RestoreRendererColors();
 
         Debug.Log("[PlayerHealth] Player died.");
 
@@ -110,6 +126,19 @@ public class PlayerHealth : MonoBehaviour
         isInvincible = true;
         yield return new WaitForSeconds(invincibilityDuration);
         isInvincible = false;
+    }
+
+    /// <summary>คืนสีวัสดุกลับเป็นปกติ (ใช้ตอน Die กลางแสง HitFlash)</summary>
+    private void RestoreRendererColors()
+    {
+        if (renderers == null) return;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            if (renderers[i] == null) continue;
+            Material[] mats = renderers[i].materials;
+            for (int j = 0; j < mats.Length && j < originalColors[i].Length; j++)
+                mats[j].color = originalColors[i][j];
+        }
     }
 
     private void UpdateHealthBar()

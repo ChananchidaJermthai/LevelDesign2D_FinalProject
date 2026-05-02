@@ -19,6 +19,13 @@ public class FPSPlayerController : MonoBehaviour
     public float sprintSpeed = 9f;
     public float acceleration = 12f;
 
+    [Header("=== Sprint Jump ===")]
+    [Tooltip("เปิด = สามารถกด Space กระโดดระหว่างกด Shift วิ่งได้")]
+    public bool allowSprintJump = true;
+
+    [Tooltip("เปิด = ถ้ากระโดดจากตอนกำลัง Sprint จะยังคงความเร็ว Sprint ตอนลอยอยู่จนกว่าจะตกถึงพื้น")]
+    public bool keepSprintSpeedWhileAirborne = true;
+
     [Header("=== Jump ===")]
     [Tooltip("ใช้เป็นความสูงของการกระโดดโดยประมาณ เช่น 1.5 - 2.5")]
     public float jumpForce = 1.8f;
@@ -95,6 +102,7 @@ public class FPSPlayerController : MonoBehaviour
     private bool isGrounded;
     private bool isDashing;
     private bool isSprintingInternal;
+    private bool sprintJumpActive;
     private bool isStaminaExhausted;
     private float dashTimer;
     private float lastStaminaUseTime = -999f;
@@ -135,6 +143,8 @@ public class FPSPlayerController : MonoBehaviour
 
         currentStamina = Mathf.Clamp(maxStamina, 0f, maxStamina);
         isStaminaExhausted = false;
+        sprintJumpActive = false;
+        jumpsRemaining = maxJumps;
         UpdateStaminaBar();
     }
 
@@ -176,7 +186,10 @@ public class FPSPlayerController : MonoBehaviour
 
         isSprintingInternal = canSprint;
 
-        float targetSpeed = isSprintingInternal ? sprintSpeed : walkSpeed;
+        // ถ้ากระโดดออกจากพื้นตอนกำลัง Sprint ให้คงความเร็ว Sprint ตอนลอยอยู่
+        // เพื่อให้วิ่ง + กระโดดต่อเนื่องได้ โดยไม่ไปตัดระบบ Stamina/Dash เดิม
+        bool keepSprintSpeedInAir = keepSprintSpeedWhileAirborne && !isGrounded && sprintJumpActive && hasMoveInput;
+        float targetSpeed = (isSprintingInternal || keepSprintSpeedInAir) ? sprintSpeed : walkSpeed;
 
         if (isSprintingInternal)
         {
@@ -198,13 +211,20 @@ public class FPSPlayerController : MonoBehaviour
 
     private void HandleJump()
     {
-        if (isGrounded && verticalVelocity.y < 0f)
+        if (isGrounded)
         {
+            // Reset jump ทุกครั้งที่ยืนบนพื้น ไม่ผูกกับ verticalVelocity.y อย่างเดียว
+            // เพื่อกันกรณียืน/วิ่งอยู่บนพื้นแต่ verticalVelocity เป็น 0 แล้วกด Space ไม่ติด
             jumpsRemaining = maxJumps;
+            sprintJumpActive = false;
         }
 
         if (Input.GetKeyDown(KeyCode.Space) && jumpsRemaining > 0)
         {
+            if (!allowSprintJump && isSprintingInternal)
+                return;
+
+            sprintJumpActive = isSprintingInternal;
             verticalVelocity.y = Mathf.Sqrt(jumpForce * 2f * gravity);
             jumpsRemaining--;
             isGrounded = false;
